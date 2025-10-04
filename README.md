@@ -17,7 +17,6 @@ A hackathon-friendly project that takes in meeting transcripts and produces:
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
-2) Copy `.env.example` to `.env` and fill in values.
 3) Run the app:
 ```bash
 streamlit run app/app.py
@@ -40,3 +39,15 @@ docker run -p 8501:8501 --env-file .env meeting-summarizer
 ## Notes
 - The `cerebras` client is implemented assuming an **OpenAI-compatible** `/chat/completions` API schema. Adjust fields per your actual Cerebras endpoint docs if needed.
 - Audio upload (speech-to-text) can be added later as a stretch goal.
+
+# Health check
+👉 http://127.0.0.1:8000/api/health
+
+You should see:
+{"status": "ok"}
+
+# Interactive API docs (Swagger UI)
+👉 http://127.0.0.1:8000/docs
+
+# Run the FastAPI server
+uvicorn app.api.main:app --reload --port 8000

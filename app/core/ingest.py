@@ -1,11 +1,35 @@
 from typing import List
 from io import BytesIO
 import chardet
+import asyncio
+from streamlit.runtime.uploaded_file_manager import UploadedFile
+
+def _to_bytes(uploaded_file):
+    if hasattr(uploaded_file, "getvalue"):     # Streamlit
+        return uploaded_file.getvalue()
+    elif hasattr(uploaded_file, "read"):       # file-like object
+        return uploaded_file.read()
+    else:
+        raise ValueError("Unsupported file object")
+
+
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
 
+# 🔹 UPDATED FUNCTION (now supports both Streamlit and FastAPI uploads)
 def _to_bytes(uploaded_file: UploadedFile) -> bytes:
-    return uploaded_file.getvalue()
+    """
+    Convert uploaded file to bytes.
+    Works for both Streamlit's UploadedFile and FastAPI's UploadFile.
+    """
+    if hasattr(uploaded_file, "getvalue"):  # Streamlit UploadedFile
+        return uploaded_file.getvalue()
+    elif hasattr(uploaded_file, "read"):    # FastAPI UploadFile 
+        
+        return uploaded_file.read()
+    else:
+        raise ValueError("Unsupported file object passed to _to_bytes()")
+    
 
 
 def _clean(text: str) -> str:
@@ -42,10 +66,10 @@ def _extract_pdf(file_bytes: bytes) -> str:
     # If no text found, fallback to OCR
     if not any(text_pages):
         print("⚡ No text from PyPDF, switching to OCR...")
-        images = convert_from_bytes(file_bytes,dpi=300)
+        images = convert_from_bytes(file_bytes, dpi=300)
         for i, img in enumerate(images, start=1):
-            ocr_text = pytesseract.image_to_string(img,config="--psm 6 --oem 3")
-            print(f"OCR resultpage{i}:", ocr_text[:200])
+            ocr_text = pytesseract.image_to_string(img, config="--psm 6 --oem 3")
+            print(f"OCR result page{i}:", ocr_text[:200])
             if ocr_text.strip():
                 text_pages.append(ocr_text)
 
@@ -61,10 +85,12 @@ def _extract_docx(file_bytes: bytes) -> str:
 
 def extract_text_from_upload(uploaded_file: UploadedFile) -> str:
     """
-    Handle a single file from Streamlit's st.file_uploader.
+    Handle a single file from Streamlit or FastAPI.
     Supports: .txt, .pdf, .docx
     """
-    name = (uploaded_file.name or "").lower()
+    name = getattr(uploaded_file, "name", None) or getattr(uploaded_file, "filename", "")
+    name = name.lower()
+
     b = _to_bytes(uploaded_file)
 
     if name.endswith(".txt"):

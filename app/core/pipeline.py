@@ -3,13 +3,40 @@ from .llm import call_llm_json
 from .parse import coerce_json
 from .models import MeetingResult, ActionItem
 
+# 🟢 Helper: break transcript into smaller pieces
+def chunk_text(text: str, max_chars: int = 4000):
+    return [text[i:i+max_chars] for i in range(0, len(text), max_chars)]
+
 def summarize_and_extract(title: str, transcript: str) -> MeetingResult:
-    print("DEBUG transcript being sent to LLM:", transcript[:500])
-    prompt = SUMMARY_PROMPT + "\n\nTranscript:\n\n" + transcript
-    raw = call_llm_json(prompt)
+    print("DEBUG transcript being sent to LLM (first 500 chars):", transcript[:500])
+
+    # --- 1️⃣ Chunk long transcripts ---
+    chunks = chunk_text(transcript)
+    chunk_summaries = []
+
+    for chunk in chunks:
+        # Prompt only for short summary at this stage
+        chunk_prompt = f"Summarize this transcript chunk in 2–3 sentences:\n\n{chunk}"
+        raw = call_llm_json(chunk_prompt)
+        data = coerce_json(raw)
+
+        # Store either structured summary or raw fallback
+        if isinstance(data, dict) and data.get("summary"):
+            chunk_summaries.append(data["summary"])
+        elif isinstance(data, str):
+            chunk_summaries.append(data)
+        else:
+            chunk_summaries.append("⚠️ No summary for this chunk.")
+
+    # --- 2️⃣ Merge chunk summaries ---
+    merged_summary_text = " ".join(chunk_summaries)
+
+    # --- 3️⃣ Second pass: ask LLM for structured JSON from merged summary ---
+    final_prompt = SUMMARY_PROMPT + "\n\nTranscript Summary:\n\n" + merged_summary_text
+    raw = call_llm_json(final_prompt)
     data = coerce_json(raw)
 
-    # Extract decisions + action items
+    # --- 4️⃣ Parse structured response ---
     decisions = data.get("decisions") or []
     action_items_raw = data.get("action_items") or []
     action_items = []
@@ -21,14 +48,9 @@ def summarize_and_extract(title: str, transcript: str) -> MeetingResult:
                 due_date=ai.get("due_date")
             ))
 
-    # ✅ Fallback: if summary is empty, show transcript snippet instead
     summary_text = data.get("summary", "").strip()
     if not summary_text:
-        summary_text = (
-            "⚠️ Model did not generate a summary.\n\n"
-            "Here is the extracted transcript instead:\n\n"
-            + transcript[:500]
-        )
+        summary_text = merged_summary_text[:500]
 
     return MeetingResult(
         title=title,

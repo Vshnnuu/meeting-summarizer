@@ -7,10 +7,14 @@ from app.core.ingest import extract_text_from_upload, extract_texts_from_uploads
 from app.core.pipeline import summarize_and_extract
 from app.core.storage import init_db, save_meeting_result, list_meetings, get_meeting
 from app.core.models import MeetingResult
-
-load_dotenv()
+from pathlib import Path
+from faster_whisper import WhisperModel
+from app.core.transcribe import transcribe_audio
+import uuid
 
 st.set_page_config(page_title="AI Meeting Summarizer", page_icon="📝", layout="wide")
+
+load_dotenv()
 
 st.title("📝 AI Meeting Summarizer & Action Tracker")
 
@@ -29,18 +33,27 @@ with tab1:
     st.subheader("Upload transcript or paste text")
     uploaded_files = st.file_uploader("Upload transcript(s) or meeting documents", type=["txt", "pdf", "docx"], accept_multiple_files=True)
     text_input = st.text_area("...or paste transcript here", height=240, placeholder="Paste your meeting transcript...")
+    audio_file = st.file_uploader("Upload meeting audio", type=["mp3", "wav", "m4a"])
     title = st.text_input("Meeting title", value="Untitled Meeting")
     run_btn = st.button("🚀 Generate Summary & Actions")
 
     if run_btn:
-        if uploaded_files is None and not text_input.strip():
-            st.error("Please upload a file or paste transcript text.")
+        if uploaded_files is None and not text_input.strip() and (audio_file is None):
+            st.error("Please upload a file ,paste transcript text or upload an audio file.")
         else:
             if uploaded_files:
                 if len(uploaded_files) == 1:
                     transcript = extract_text_from_upload(uploaded_files[0])
                 else:
                     transcript = extract_texts_from_uploads(uploaded_files)
+            elif audio_file:
+                file_ext = audio_file.name.split(".")[-1]
+                temp_path = Path(f"temp_audio_{uuid.uuid4()}.{file_ext}")
+                with open(temp_path, "wb") as f:
+                    f.write(audio_file.read())
+
+                with st.spinner("Transcribing audio..."):
+                    transcript = transcribe_audio(str(temp_path))
             else:
                 transcript = text_input.strip()
             with st.spinner("Thinking..."):
