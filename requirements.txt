@@ -8,11 +8,6 @@ sqlalchemy==2.0.35
 pandas==2.2.2       
 requests==2.32.3
 
-# Backend API
-fastapi==0.115.2
-uvicorn[standard]==0.30.6
-python-multipart==0.0.9
-
 # File parsing
 pdfplumber==0.11.0
 python-docx==1.1.2
@@ -24,4 +19,8 @@ Pillow==10.4.0
 
 # Speech-to-text
 faster-whisper==1.0.2
+# macOS Apple Silicon optimized runtime
+onnxruntime-silicon; platform_system == "Darwin" and platform_machine == "arm64"
+# fallback for other systems
+onnxruntime; platform_system != "Darwin" or platform_machine != "arm64"
 

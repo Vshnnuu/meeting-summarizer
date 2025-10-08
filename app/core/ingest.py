@@ -5,6 +5,9 @@ import tempfile
 import chardet
 from pypdf import PdfReader
 from docx import Document
+import tempfile
+import streamlit as st
+
 
 # --- OCR imports (lazy) ---
 try:
@@ -71,35 +74,39 @@ def _extract_docx(file_bytes: bytes) -> str:
 
 @st.cache_resource(show_spinner=False)
 def _load_whisper_model():
+    """
+    Load and cache the faster-whisper model so it's reused across runs.
+    The model is loaded once and stays in memory for later audio uploads.
+    """
     from faster_whisper import WhisperModel
-    # tiny.en is fast and cached after first run
-    return WhisperModel("tiny.en", device="cpu", compute_type="int8")
-
+    print("🎧 Loading Whisper model (base)...")
+    return WhisperModel("base", device="cpu", compute_type="int8")  # use 'tiny' for faster
 
 def _transcribe_audio(file_bytes: bytes, filename: str) -> str:
-    """Transcribe audio using cached faster-whisper model."""
-    print("🎙️ Saving temp audio...", flush=True)
+    """
+    Transcribe audio using faster-whisper (cached model).
+    """
+    print(f"🎙️ Transcribing audio file: {filename}")
     with tempfile.NamedTemporaryFile(delete=False, suffix=filename) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
 
     model = _load_whisper_model()
-    print("🚀 Starting transcription...", flush=True)
-
     segments, info = model.transcribe(tmp_path, beam_size=1)
+
     transcript_lines = []
     speaker_id = 1
     last_end = 0.0
 
     for seg in segments:
+        # alternate speakers when there's a gap >2s
         if seg.start - last_end > 2.0:
             speaker_id = 1 if speaker_id == 2 else 2
         transcript_lines.append(f"Speaker {speaker_id}: {seg.text.strip()}")
         last_end = seg.end
 
-    print("✅ Transcription complete:", filename, flush=True)
+    print(f"✅ Transcription complete ({filename})")
     return "\n".join(transcript_lines)
-
 
 # --- Main public functions ---
 def extract_text_from_upload(uploaded_file) -> str:

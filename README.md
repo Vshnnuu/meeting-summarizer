@@ -3,11 +3,17 @@
 A hackathon-friendly project that takes in meeting transcripts and produces:
 - A concise summary
 - Key decisions
-- Structured action items (assignee, task, due_date)
+- Structured action items (assignee (if mentioned), task, due_date (if available) and other_notes (if mentioned))
+
+### Features
+- Upload files **.txt, .pdf, .docx** or paste text directly 
+- Supports OCR for scanned PDFs
+- Supports audio transcription using **Faster-Whisper**
+- Local data persistence for meeting history
 
 ## Tech
 - **Meta LLaMA** (model family) served via **Cerebras** (fast inference)
-- **Python + Streamlit** UI
+- **Python 3.11 + Streamlit** UI
 - **SQLite** for simple persistence
 - **Docker** for portable deployment
 
@@ -16,13 +22,15 @@ A hackathon-friendly project that takes in meeting transcripts and produces:
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+brew install poppler tesseract ffmpeg   # for OCR + audio decoding
 ```
 3) Run the app:
 ```bash
-streamlit run app/app.py
+streamlit run app/main.py
 ```
 
-> If you don't yet have Cerebras set up, the app will fall back to a lightweight mock so you can test the UI end-to-end.
+> If Cerebras is not set up, the app will fall back to a lightweight mock so you can test the UI end-to-end.
+
 
 ## Environment
 - `LLM_PROVIDER`: one of `cerebras`, `mock`
@@ -37,17 +45,4 @@ docker run -p 8501:8501 --env-file .env meeting-summarizer
 ```
 
 ## Notes
-- The `cerebras` client is implemented assuming an **OpenAI-compatible** `/chat/completions` API schema. Adjust fields per your actual Cerebras endpoint docs if needed.
-- Audio upload (speech-to-text) can be added later as a stretch goal.
-
-# Health check
-👉 http://127.0.0.1:8000/api/health
-
-You should see:
-{"status": "ok"}
-
-# Interactive API docs (Swagger UI)
-👉 http://127.0.0.1:8000/docs
-
-# Run the FastAPI server
-uvicorn app.api.main:app --reload --port 8000
+- The `cerebras` client is implemented assuming `/chat/completions` API schema. Adjust fields per your actual Cerebras endpoint docs if needed.
