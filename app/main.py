@@ -1,134 +1,158 @@
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+
 import streamlit as st
 from dotenv import load_dotenv
-import os
+
 from app.core.ingest import extract_text_from_upload, extract_texts_from_uploads
 from app.core.pipeline import summarize_and_extract
 from app.core.storage import init_db, save_meeting_result, list_meetings, get_meeting
 from app.core.models import MeetingResult
-from pathlib import Path
-from faster_whisper import WhisperModel
-from app.core.transcribe import transcribe_audio
-import uuid
-
-st.set_page_config(page_title="AI Meeting Summarizer", page_icon="📝", layout="wide")
 
 load_dotenv()
+st.set_page_config(page_title="AI Meeting Summarizer", page_icon="📝", layout="wide")
+
+# --- Helper: render action items nicely (only border, transparent background) ---
+def render_action_items(items):
+    if not items:
+        st.info("No action items found.")
+        return
+
+    for i, item in enumerate(items, start=1):
+        # handle dict (from DB) and object (from MeetingResult)
+        if isinstance(item, dict):
+            assignee = item.get("assignee") or "—"
+            task = item.get("task") or "—"
+            due = item.get("due_date") or "—"
+        else:
+            assignee = getattr(item, "assignee", None) or "—"
+            task = getattr(item, "task", None) or "—"
+            due = getattr(item, "due_date", None) or "—"
+
+        st.markdown(
+            f"""
+            <div style="
+                border: 1px solid #6c757d;
+                border-radius: 8px;
+                padding: 10px;
+                margin-bottom: 10px;
+                background-color: transparent;
+            ">
+                <b>{i}. Assignee:</b> {assignee}<br>
+                <b>Task:</b> {task}<br>
+                <b>Due Date:</b> {due}
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+# --- Sidebar: History ---
+with st.sidebar:
+    st.header("📜 History")
+    init_db()
+    meetings = list_meetings()
+    if not meetings:
+        st.caption("No meetings saved yet.")
+    else:
+        for m in meetings:
+            if st.button(f"{m['title']} • {m['created_at']}", key=f"m-{m['id']}"):
+                st.session_state["selected_meeting_id"] = m["id"]
 
 st.title("📝 AI Meeting Summarizer & Action Tracker")
 
-with st.sidebar:
-    st.header("Meetings")
-    if st.button("🔄 Refresh"):
-        st.rerun()
-    meetings = list_meetings()
-    for m in meetings:
-        if st.button(f"📄 {m['title']} ({m['created_at'][:10]})", key=f"m_{m['id']}"):
-            st.session_state['selected_meeting_id'] = m['id']
+# --- If a saved meeting is selected, show its details ---
+sel_id = st.session_state.get("selected_meeting_id")
+if sel_id:
+    m = get_meeting(sel_id)
+    if not m:
+        st.warning("Could not load this meeting.")
+    else:
+        st.subheader(m["title"])
+        st.markdown("### 📝 Summary")
+        st.write(m["summary"] or "—")
 
-tab1, tab2 = st.tabs(["➕ New Summary", "📚 History"])
+        if m["decisions"]:
+            st.markdown("### 🧩 Key Decisions")
+            for d in m["decisions"]:
+                st.markdown(f"- {d}")
 
-with tab1:
-    st.subheader("Upload transcript or paste text")
-    uploaded_files = st.file_uploader("Upload transcript(s) or meeting documents", type=["txt", "pdf", "docx"], accept_multiple_files=True)
-    text_input = st.text_area("...or paste transcript here", height=240, placeholder="Paste your meeting transcript...")
-    audio_file = st.file_uploader("Upload meeting audio", type=["mp3", "wav", "m4a"])
-    title = st.text_input("Meeting title", value="Untitled Meeting")
-    run_btn = st.button("🚀 Generate Summary & Actions")
+        st.markdown("### ✅ Action Items")
+        render_action_items(m.get("action_items") or [])
+
+        if m.get("important_dates"):
+            st.markdown("### 📅 Important Dates")
+            for d in m["important_dates"]:
+                st.markdown(f"- {d}")
+
+        if m.get("other_notes"):
+            st.markdown("### 📝 Other Notes")
+            for n in m["other_notes"]:
+                st.markdown(f"- {n}")
+
+        st.divider()
+        if st.button("← Back"):
+            st.session_state.pop("selected_meeting_id", None)
+
+# --- Otherwise, show upload/paste form ---
+else:
+    with st.form("input-form"):
+        title = st.text_input("Meeting title", "Untitled Meeting")
+        uploaded_files = st.file_uploader(
+            "Upload transcript files (.txt, .pdf, OCR PDF, .docx, audio)",
+            type=["txt", "pdf", "docx", "mp3", "wav", "m4a"],
+            accept_multiple_files=True,
+        )
+        text_input = st.text_area("…or paste raw transcript text here", height=200)
+        run_btn = st.form_submit_button("🚀 Generate Summary & Actions")
 
     if run_btn:
-        if uploaded_files is None and not text_input.strip() and (audio_file is None):
-            st.error("Please upload a file ,paste transcript text or upload an audio file.")
+        if (not uploaded_files) and (not text_input.strip()):
+            st.error("Please upload a file or paste transcript text.")
+            st.stop()
+
+        # --- Build transcript ---
+        if uploaded_files:
+            file_name = uploaded_files[0].name.lower()
+
+            if file_name.endswith((".mp3", ".wav", ".m4a")):
+                st.info("🎙️ Transcribing audio... please wait (first run may take ~30 s)")
+                transcript = extract_text_from_upload(uploaded_files[0])
+                st.success("✅ Audio transcription complete.")
+            elif len(uploaded_files) == 1:
+                transcript = extract_text_from_upload(uploaded_files[0])
+            else:
+                transcript = extract_texts_from_uploads(uploaded_files)
         else:
-            if uploaded_files:
-                if len(uploaded_files) == 1:
-                    transcript = extract_text_from_upload(uploaded_files[0])
-                else:
-                    transcript = extract_texts_from_uploads(uploaded_files)
-            elif audio_file:
-                file_ext = audio_file.name.split(".")[-1]
-                temp_path = Path(f"temp_audio_{uuid.uuid4()}.{file_ext}")
-                with open(temp_path, "wb") as f:
-                    f.write(audio_file.read())
+            transcript = text_input.strip()
 
-                with st.spinner("Transcribing audio..."):
-                    transcript = transcribe_audio(str(temp_path))
-            else:
-                transcript = text_input.strip()
-            with st.spinner("Thinking..."):
-                result: MeetingResult = summarize_and_extract(title=title or "Untitled Meeting", transcript=transcript)
+        # --- Summarization ---
+        with st.spinner("🧠 Summarizing..."):
+            result: MeetingResult = summarize_and_extract(
+                title=title or "Untitled Meeting",
+                transcript=transcript,
+            )
 
-            st.success("Done!")
-            st.markdown("### 📝 Summary")
-            st.write(result.summary)
+        # --- Persist & display ---
+        save_meeting_result(result)
+        st.success("Done! Saved to history.")
 
-            if result.decisions:
-                st.markdown("### 🧩 Key Decisions")
-                for d in result.decisions:
-                    st.markdown(f"- {d}")
+        st.markdown("### 📝 Summary")
+        st.write(result.summary or "—")
 
-            st.markdown("### ✅ Action Items")
-            if not result.action_items:
-                st.info("No action items found.")
-            else:
-                for i, item in enumerate(result.action_items, start=1):
-                    st.markdown(f"**{i}.** *Assignee:* {item.assignee or '—'}  \
-"
-                                f"*Task:* {item.task}  \
-"
-                                f"*Due:* {item.due_date or '—'}")
+        if result.decisions:
+            st.markdown("### 🧩 Key Decisions")
+            for d in result.decisions:
+                st.markdown(f"- {d}")
 
-            # Save to DB
-            saved_id = save_meeting_result(result)
-            st.success(f"Saved meeting #{saved_id}. See it in History.")
+        st.markdown("### ✅ Action Items")
+        render_action_items(result.action_items)
 
-with tab2:
-    st.subheader("Your past meetings")
-    meetings = list_meetings()
-    if not meetings:
-        st.info("No meetings yet. Create one in the first tab.")
-    else:
-        selected_id = st.session_state.get('selected_meeting_id')
-        if selected_id:
-            m = get_meeting(selected_id)
-            st.markdown(f"""### {m['title']}  
-*Created:* {m['created_at']}""")
+        if result.important_dates:
+            st.markdown("### 📅 Important Dates")
+            for d in result.important_dates:
+                st.markdown(f"- {d}")
 
-            st.markdown("#### 📝 Summary")
-            st.write(m['summary'])
-
-            if m['decisions']:
-                st.markdown("#### 🧩 Decisions")
-                for d in m['decisions']:
-                    st.markdown(f"- {d}")
-
-            st.markdown("#### ✅ Action Items")
-            if not m['action_items']:
-                st.info("No action items stored.")
-            else:
-                for i, item in enumerate(m['action_items'], start=1):
-                    st.markdown(f"""**{i}.** *Assignee:* {item.get('assignee') or '—'}  \
-            *Task:* {item.get('task')}  \
-            *Due:* {item.get('due_date') or '—'}""")
-
-            # Important Dates
-            if m.get('important_dates'):
-                st.markdown("#### 📅 Important Dates")
-                for d in m['important_dates']:
-                    st.markdown(f"- {d}")
-
-            # Other Notes
-            if m.get('other_notes'):
-                st.markdown("#### 📝 Other Notes")
-                for note in m['other_notes']:
-                    st.markdown(f"- {note}")
-
-        else:
-            # Show list of all meetings if none is selected
-            for m in meetings:
-                st.markdown(f"""**{m['title']}**  
-*Created:* {m['created_at']}  
-
-{m['summary'][:300]}...""")
-
+        if result.other_notes:
+            st.markdown("### 📝 Other Notes")
+            for n in result.other_notes:
+                st.markdown(f"- {n}")

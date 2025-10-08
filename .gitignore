@@ -6,3 +6,6 @@ app/data/*.db
 app/data/*.csv
 app/data/*.json
 meeting-summarizer.zip
+
+
+.DS_Store

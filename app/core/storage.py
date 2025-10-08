@@ -9,68 +9,73 @@ def init_db():
     with sqlite3.connect(DB_PATH) as con:
         cur = con.cursor()
         cur.execute(
-            """CREATE TABLE IF NOT EXISTS meetings(
+            """
+            CREATE TABLE IF NOT EXISTS meetings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT,
                 transcript TEXT,
                 summary TEXT,
-                decisions TEXT,        -- JSON list
-                action_items TEXT,     -- JSON list
-                important_dates TEXT,  -- JSON list
-                other_notes TEXT,      -- JSON list
+                decisions TEXT,
+                action_items TEXT,
+                important_dates TEXT,
+                other_notes TEXT,
                 created_at TEXT
-            )"""
+            )
+            """
         )
         con.commit()
 
-def save_meeting_result(result: MeetingResult) -> int:
-    init_db()
+def save_meeting_result(m: MeetingResult) -> int:
     with sqlite3.connect(DB_PATH) as con:
         cur = con.cursor()
         cur.execute(
-            """INSERT INTO meetings(
-                   title, transcript, summary, decisions, action_items, important_dates, other_notes, created_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                result.title,
-                result.transcript,
-                result.summary,
-                json.dumps(result.decisions, ensure_ascii=False),
-                json.dumps([ai.dict() for ai in result.action_items], ensure_ascii=False),
-                json.dumps(result.important_dates, ensure_ascii=False),
-                json.dumps(result.other_notes, ensure_ascii=False),
-                result.created_at
+            """
+            INSERT INTO meetings (
+                title, transcript, summary, decisions, action_items,
+                important_dates, other_notes, created_at
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                m.title,
+                m.transcript,
+                m.summary,
+                json.dumps(m.decisions or []),
+                json.dumps([ai.model_dump() for ai in m.action_items] if m.action_items else []),
+                json.dumps(m.important_dates or []),
+                json.dumps(m.other_notes or []),
+                m.created_at,
+            ),
         )
         con.commit()
         return cur.lastrowid
 
-def list_meetings() -> List[Dict[str, Any]]:
-    init_db()
+def list_meetings(limit: int = 50) -> List[Dict[str, Any]]:
     with sqlite3.connect(DB_PATH) as con:
-        cur = con.cursor()
-        rows = cur.execute(
-            "SELECT id, title, summary, created_at FROM meetings ORDER BY id DESC"
+        rows = con.execute(
+            """
+            SELECT id, title, created_at, summary
+            FROM meetings
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
         ).fetchall()
-    out = []
-    for r in rows:
-        out.append({
-            "id": r[0],
-            "title": r[1],
-            "summary": r[2],
-            "created_at": r[3]
-        })
-    return out
+    return [
+        {"id": r[0], "title": r[1], "created_at": r[2], "summary": r[3] or ""}
+        for r in rows
+    ]
 
 def get_meeting(meeting_id: int) -> Dict[str, Any]:
-    init_db()
     with sqlite3.connect(DB_PATH) as con:
-        cur = con.cursor()
-        row = cur.execute(
-            """SELECT id, title, transcript, summary, decisions, action_items,
-                      important_dates, other_notes, created_at
-               FROM meetings WHERE id = ?""",
-            (meeting_id,)
+        row = con.execute(
+            """
+            SELECT id, title, transcript, summary, decisions, action_items,
+                   important_dates, other_notes, created_at
+            FROM meetings
+            WHERE id = ?
+            """,
+            (meeting_id,),
         ).fetchone()
     if not row:
         return {}
@@ -83,5 +88,6 @@ def get_meeting(meeting_id: int) -> Dict[str, Any]:
         "action_items": json.loads(row[5]) if row[5] else [],
         "important_dates": json.loads(row[6]) if row[6] else [],
         "other_notes": json.loads(row[7]) if row[7] else [],
-        "created_at": row[8]
+        "created_at": row[8],
     }
+

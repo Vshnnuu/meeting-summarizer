@@ -1,42 +1,34 @@
+import streamlit as st
 from typing import List
 from io import BytesIO
+import tempfile
 import chardet
-import asyncio
-from streamlit.runtime.uploaded_file_manager import UploadedFile
+from pypdf import PdfReader
+from docx import Document
 
-def _to_bytes(uploaded_file):
-    if hasattr(uploaded_file, "getvalue"):     # Streamlit
-        return uploaded_file.getvalue()
-    elif hasattr(uploaded_file, "read"):       # file-like object
-        return uploaded_file.read()
-    else:
-        raise ValueError("Unsupported file object")
-
-
-from streamlit.runtime.uploaded_file_manager import UploadedFile
+# --- OCR imports (lazy) ---
+try:
+    from pdf2image import convert_from_bytes
+    import pytesseract
+except Exception as e:
+    convert_from_bytes = None
+    pytesseract = None
 
 
-# 🔹 UPDATED FUNCTION (now supports both Streamlit and FastAPI uploads)
-def _to_bytes(uploaded_file: UploadedFile) -> bytes:
-    """
-    Convert uploaded file to bytes.
-    Works for both Streamlit's UploadedFile and FastAPI's UploadFile.
-    """
-    if hasattr(uploaded_file, "getvalue"):  # Streamlit UploadedFile
-        return uploaded_file.getvalue()
-    elif hasattr(uploaded_file, "read"):    # FastAPI UploadFile 
-        
-        return uploaded_file.read()
-    else:
-        raise ValueError("Unsupported file object passed to _to_bytes()")
-    
+# --- Utility functions ---
+def _to_bytes(uploaded_file) -> bytes:
+    """Convert a Streamlit UploadedFile to bytes."""
+    return uploaded_file.getvalue()
 
 
 def _clean(text: str) -> str:
+    """Clean extracted text by normalizing spaces."""
     return " ".join(text.replace("\r", " ").replace("\xa0", " ").split())
 
 
+# --- Extractors for each file type ---
 def _extract_txt(file_bytes: bytes) -> str:
+    """Extract text from plain text files."""
     enc = chardet.detect(file_bytes).get("encoding") or "utf-8"
     try:
         return file_bytes.decode(enc, errors="ignore")
@@ -45,52 +37,77 @@ def _extract_txt(file_bytes: bytes) -> str:
 
 
 def _extract_pdf(file_bytes: bytes) -> str:
-    from pypdf import PdfReader
-    from pdf2image import convert_from_bytes
-    import pytesseract
-    from io import BytesIO
-
-    text_pages = []
-
-    # First try PyPDF extraction
-    reader = PdfReader(BytesIO(file_bytes))
+    """
+    Extract text from a PDF. Falls back to OCR if text is empty (for scanned PDFs).
+    """
+    buf = BytesIO(file_bytes)
+    reader = PdfReader(buf)
+    parts = []
     for page in reader.pages:
         try:
-            txt = page.extract_text()
-            if txt:
-                text_pages.append(txt)
+            txt = page.extract_text() or ""
+            parts.append(txt)
         except Exception:
-            pass
-    print("PyPDF extracted:", text_pages)
+            parts.append("")
+    text = "\n".join(parts)
 
-    # If no text found, fallback to OCR
-    if not any(text_pages):
-        print("⚡ No text from PyPDF, switching to OCR...")
-        images = convert_from_bytes(file_bytes, dpi=300)
-        for i, img in enumerate(images, start=1):
-            ocr_text = pytesseract.image_to_string(img, config="--psm 6 --oem 3")
-            print(f"OCR result page{i}:", ocr_text[:200])
-            if ocr_text.strip():
-                text_pages.append(ocr_text)
-
-    return "\n".join(text_pages)
+    # OCR fallback only if no text and OCR tools are available
+    if not text.strip() and convert_from_bytes and pytesseract:
+        try:
+            images = convert_from_bytes(file_bytes)
+            ocr_text = [pytesseract.image_to_string(img, lang="eng") for img in images]
+            text = "\n".join(ocr_text)
+        except Exception as e:
+            print("⚠️ OCR failed:", e)
+    return text
 
 
 def _extract_docx(file_bytes: bytes) -> str:
-    from docx import Document
-    doc = Document(BytesIO(file_bytes))
-    paras = [p.text for p in doc.paragraphs]
-    return "\n".join(paras)
+    """Extract text from a Word document."""
+    buf = BytesIO(file_bytes)
+    doc = Document(buf)
+    return "\n".join([p.text for p in doc.paragraphs])
 
 
-def extract_text_from_upload(uploaded_file: UploadedFile) -> str:
+@st.cache_resource(show_spinner=False)
+def _load_whisper_model():
+    from faster_whisper import WhisperModel
+    # tiny.en is fast and cached after first run
+    return WhisperModel("tiny.en", device="cpu", compute_type="int8")
+
+
+def _transcribe_audio(file_bytes: bytes, filename: str) -> str:
+    """Transcribe audio using cached faster-whisper model."""
+    print("🎙️ Saving temp audio...", flush=True)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=filename) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+
+    model = _load_whisper_model()
+    print("🚀 Starting transcription...", flush=True)
+
+    segments, info = model.transcribe(tmp_path, beam_size=1)
+    transcript_lines = []
+    speaker_id = 1
+    last_end = 0.0
+
+    for seg in segments:
+        if seg.start - last_end > 2.0:
+            speaker_id = 1 if speaker_id == 2 else 2
+        transcript_lines.append(f"Speaker {speaker_id}: {seg.text.strip()}")
+        last_end = seg.end
+
+    print("✅ Transcription complete:", filename, flush=True)
+    return "\n".join(transcript_lines)
+
+
+# --- Main public functions ---
+def extract_text_from_upload(uploaded_file) -> str:
     """
-    Handle a single file from Streamlit or FastAPI.
-    Supports: .txt, .pdf, .docx
+    Handle a single file from Streamlit's st.file_uploader.
+    Supports: .txt, .pdf, .docx, audio (.mp3, .wav, .m4a)
     """
-    name = getattr(uploaded_file, "name", None) or getattr(uploaded_file, "filename", "")
-    name = name.lower()
-
+    name = (uploaded_file.name or "").lower()
     b = _to_bytes(uploaded_file)
 
     if name.endswith(".txt"):
@@ -99,14 +116,18 @@ def extract_text_from_upload(uploaded_file: UploadedFile) -> str:
         raw = _extract_pdf(b)
     elif name.endswith(".docx"):
         raw = _extract_docx(b)
+    elif name.endswith((".mp3", ".wav", ".m4a")):
+        raw = _transcribe_audio(b, name)
     else:
+        # Safe fallback
         raw = _extract_txt(b)
+
     return _clean(raw)
 
 
-def extract_texts_from_uploads(files: List[UploadedFile]) -> str:
+def extract_texts_from_uploads(files: List) -> str:
     """
-    For multiple uploads — concatenate in a readable way.
+    Handle multiple uploads — concatenate them in a readable way.
     """
     parts = []
     for f in files:
